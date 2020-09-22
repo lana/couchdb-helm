@@ -1,0 +1,82 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+    name: {{ template "couchdb.fullname" . }}-post-install-script
+    labels:
+      app: {{ template "couchdb.name" . }}
+      chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+      release: {{ .Release.Name }}
+      heritage: {{ .Release.Service }}
+data:
+  setup.sh: |
+    set -e
+    BASE_URL=http://{{ template "couchdb.fullname" . }}:5984
+
+    touch /tmp/curl.cf
+{{ if or .Values.couchdbConfig.chttpd.require_valid_user (not .Values.allowAdminParty) }}
+    echo "-u $(cat /tmp/admin-password/adminUsername):$(cat /tmp/admin-password/adminPassword)" >> /tmp/curl.cf
+{{ end }}
+
+    echo "Waiting for CouchDB service to start..."
+    until curl --silent --max-time 5 --head --fail "${BASE_URL}/_up" -K /tmp/curl.cf; do
+        printf "%s: CouchDB not up yet. Will try again\n" "$(date)"
+        sleep 2
+    done
+
+    echo "Attempting to create 'access' user..."
+    status=""
+    until [ "$status" == "201" ]; do
+      status=$(curl --silent --write-out '%{http_code}' --output /dev/null --max-time 5 -X PUT http://$(cat /tmp/admin-password/adminUsername):$(cat /tmp/admin-password/adminPassword)@{{ template "couchdb.fullname" . }}:5984/_users/org.couchdb.user:access -H 'Content-Type: application/json' -d '{"name":"access","password":"gooFai5PaihueGh2oopucii6iequ5eil","type":"user","roles":[]}')
+      if [ "$status" == "409" ]; then
+          echo "User already exists"
+          exit 0
+      fi
+      echo "Curl returned status ${status}, will try again"
+      sleep 2
+    done
+    echo "Success!"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ template "couchdb.fullname" . }}-post-install-hook
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service | quote }}
+    app.kubernetes.io/instance: {{ .Release.Name | quote }}
+    app.kubernetes.io/version: {{ .Chart.AppVersion }}
+    helm.sh/chart: "{{ .Chart.Name }}-{{ .Chart.Version }}"
+  annotations:
+    # This is what defines this resource as a hook. Without this line, the
+    # job is considered part of the release.
+    "helm.sh/hook": post-install
+    "helm.sh/hook-weight": "50"
+    "helm.sh/hook-delete-policy": hook-succeeded
+spec:
+  template:
+    metadata:
+      name: {{ template "couchdb.fullname" . }}-post-install-hook
+      labels:
+        app.kubernetes.io/managed-by: {{ .Release.Service | quote }}
+        app.kubernetes.io/instance: {{ .Release.Name | quote }}
+        helm.sh/chart: "{{ .Chart.Name }}-{{ .Chart.Version }}"
+    spec:
+      restartPolicy: Never
+      volumes:
+      - name: admin-password-volume
+        secret:
+          secretName: {{ template "couchdb.fullname" . }}
+      - name: post-install-script-volume
+        configMap:
+          name: {{ template "couchdb.fullname" . }}-post-install-script
+      containers:
+      - name: post-install-job
+        image: "curlimages/curl:7.72.0"
+        command: [ "/bin/sh", "/tmp/script/setup.sh" ]
+        volumeMounts:
+        - name: admin-password-volume
+          readOnly: true
+          mountPath: /tmp/admin-password
+        - name: post-install-script-volume
+          readOnly: true
+          mountPath: /tmp/script
