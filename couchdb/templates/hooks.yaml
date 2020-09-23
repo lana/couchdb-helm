@@ -1,0 +1,60 @@
+{{ if .Values.hooks }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+    name: {{ template "couchdb.fullname" . }}-hook-scripts
+    labels:
+      app: {{ template "couchdb.name" . }}
+      chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+      release: {{ .Release.Name }}
+      heritage: {{ .Release.Service }}
+data:
+{{ toYaml .Values.hooks | indent 4 }}
+{{ end }}
+{{ if .Values.hooks.postInstall }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ template "couchdb.fullname" . }}-post-install-hook
+  labels:
+    app.kubernetes.io/managed-by: {{ .Release.Service | quote }}
+    app.kubernetes.io/instance: {{ .Release.Name | quote }}
+    app.kubernetes.io/version: {{ .Chart.AppVersion }}
+    helm.sh/chart: "{{ .Chart.Name }}-{{ .Chart.Version }}"
+  annotations:
+    # This is what defines this resource as a hook. Without this line, the
+    # job is considered part of the release.
+    "helm.sh/hook": post-install
+    "helm.sh/hook-weight": "50"
+    "helm.sh/hook-delete-policy": hook-succeeded
+spec:
+  template:
+    metadata:
+      name: {{ template "couchdb.fullname" . }}-post-install-hook
+      labels:
+        app.kubernetes.io/managed-by: {{ .Release.Service | quote }}
+        app.kubernetes.io/instance: {{ .Release.Name | quote }}
+        helm.sh/chart: "{{ .Chart.Name }}-{{ .Chart.Version }}"
+    spec:
+      restartPolicy: Never
+      volumes:
+      - name: admin-password-volume
+        secret:
+          secretName: {{ template "couchdb.fullname" . }}
+      - name: hook-scripts-volume
+        configMap:
+          name: {{ template "couchdb.fullname" . }}-hook-scripts
+      containers:
+      - name: post-install-job
+        image: "curlimages/curl:7.72.0"
+        command: [ "/bin/sh", "/tmp/scripts/postInstall" ]
+        volumeMounts:
+        - name: admin-password-volume
+          readOnly: true
+          mountPath: /tmp/admin-password
+        - name: hook-scripts-volume
+          readOnly: true
+          mountPath: /tmp/scripts
+{{ end }}
